@@ -12,6 +12,7 @@ import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import {
   Bell,
+  BriefcaseBusiness,
   Bug,
   Clock,
   HelpCircle,
@@ -159,6 +160,15 @@ export default function MoreScreen() {
       onPress: () => {
         haptics.tap();
         router.push('/investor-qr' as any);
+      },
+    },
+    {
+      icon: <BriefcaseBusiness size={20} color={colors.emerald} />,
+      title: 'Hiring QR',
+      subtitle: 'Careers link + 5%/90-day referral bonus',
+      onPress: () => {
+        haptics.tap();
+        router.push('/hiring-qr' as any);
       },
     },
     {

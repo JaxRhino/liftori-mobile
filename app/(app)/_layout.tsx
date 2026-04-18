@@ -91,6 +91,9 @@ export default function AppLayout() {
       <Tabs.Screen name="notifications" options={{ href: null }} />
       <Tabs.Screen name="bug-report" options={{ href: null }} />
       <Tabs.Screen name="settings" options={{ href: null }} />
+      <Tabs.Screen name="my-qr" options={{ href: null }} />
+      <Tabs.Screen name="investor-qr" options={{ href: null }} />
+      <Tabs.Screen name="hiring-qr" options={{ href: null }} />
     </Tabs>
   );
 }
