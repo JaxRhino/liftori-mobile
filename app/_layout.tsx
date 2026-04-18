@@ -24,6 +24,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StyleSheet, View } from 'react-native';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import { colors } from '@/lib/theme';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 // Keep the splash visible until we've read the persisted session.
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -57,18 +58,20 @@ function SplashGate({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout() {
   return (
-    <GestureHandlerRootView style={styles.flex}>
-      <SafeAreaProvider>
-        <QueryClientProvider client={queryClient}>
-          <AuthProvider>
-            <StatusBar style="light" />
-            <SplashGate>
-              <Slot />
-            </SplashGate>
-          </AuthProvider>
-        </QueryClientProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <ErrorBoundary>
+      <GestureHandlerRootView style={styles.flex}>
+        <SafeAreaProvider>
+          <QueryClientProvider client={queryClient}>
+            <AuthProvider>
+              <StatusBar style="light" />
+              <SplashGate>
+                <Slot />
+              </SplashGate>
+            </AuthProvider>
+          </QueryClientProvider>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </ErrorBoundary>
   );
 }
 
