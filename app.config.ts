@@ -25,7 +25,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ios: {
     supportsTablet: true,
     bundleIdentifier: 'ai.liftori.mobile',
-    buildNumber: '1',
     config: {
       usesNonExemptEncryption: false,
     },
@@ -41,7 +40,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: 'ai.liftori.mobile',
-    versionCode: 1,
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
       backgroundColor: '#0f172a',
@@ -64,6 +62,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   plugins: [
     'expo-router',
     'expo-secure-store',
+    'expo-image',
     [
       'expo-notifications',
       {
@@ -100,5 +99,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   runtimeVersion: {
     policy: 'appVersion',
+  },
+  updates: {
+    url: 'https://u.expo.dev/b6c52b3d-9864-4839-b480-49cb95d5e354',
   },
 });

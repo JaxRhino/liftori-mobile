@@ -1,0 +1,63 @@
+name: EAS Build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build'
+        required: true
+        default: 'android'
+        type: choice
+        options:
+          - android
+          - ios
+          - all
+      profile:
+        description: 'EAS build profile'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - production
+          - development
+
+jobs:
+  build:
+    name: EAS Build (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for EXPO_TOKEN
+        run: |
+          if [ -z "${{ secrets.EXPO_TOKEN }}" ]; then
+            echo "EXPO_TOKEN secret is missing. Add it in repo Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Android preview APK
+        run: eas build --platform ${{ github.event.inputs.platform || 'android' }} --profile ${{ github.event.inputs.profile || 'preview' }} --non-interactive --no-wait
+
+      - name: Summarize build
+        run: |
+          echo "Build submitted to EAS. Track progress at:"
+          echo "https://expo.dev/accounts/rhinomarch/projects/liftori-mobile/builds"
