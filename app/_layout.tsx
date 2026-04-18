@@ -5,7 +5,9 @@
  *     └ GestureHandlerRootView
  *         └ QueryClientProvider (react-query)
  *             └ AuthProvider
- *                 └ <Slot /> (renders the matched route subtree)
+ *                 └ SplashGate
+ *                     ├ <Slot /> (renders the matched route subtree)
+ *                     └ <AnnouncementModal /> (global founder-broadcast receiver)
  *
  * Also configures:
  *   • Dark status bar text (light content on dark surfaces)
@@ -25,6 +27,7 @@ import { StyleSheet, View } from 'react-native';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import { colors } from '@/lib/theme';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { AnnouncementModal } from '@/components/AnnouncementModal';
 
 // Keep the splash visible until we've read the persisted session.
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -66,6 +69,8 @@ export default function RootLayout() {
               <StatusBar style="light" />
               <SplashGate>
                 <Slot />
+                {/* Global receiver — floats over every screen once auth is ready. */}
+                <AnnouncementModal />
               </SplashGate>
             </AuthProvider>
           </QueryClientProvider>

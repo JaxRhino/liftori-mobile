@@ -399,6 +399,22 @@ export async function createRow(payload: Partial<MyRow>): Promise<MyRow> {
 
 <!-- Format: [Date] — [Pattern] — [Context] -->
 
+2026-04-18 — **`AppState.addEventListener('change', …)` is the mobile `visibilitychange`.** Every poller / receiver in the app should hook `state === 'active'` alongside its `setInterval`, otherwise a phone left backgrounded overnight misses events until the next tick fires. Reference: `AnnouncementModal.tsx` refresh hook + `useClock.ts` resume logic.
+
+2026-04-18 — **`Modal` with `statusBarTranslucent` is the "floats over every tab" pattern.** No need for a dedicated portal host — as long as the component is mounted inside the provider tree (e.g. as a sibling of `<Slot />` inside `SplashGate`), a `visible transparent` `Modal` renders above every screen including the tab bar. Reference: `app/_layout.tsx` + `AnnouncementModal.tsx`.
+
+2026-04-18 — **Keep audience / eligibility logic on the server.** The mobile announcement receiver is ~10 lines of data logic because every "should I see this?" decision stays in the `get_active_announcements_for_me` RPC + `announcement_acknowledgments` RLS. The only client-side filter is a local `ackedRef: Set<string>` for dedup during RPC latency. Porting to another surface (email digest, desktop toast) re-uses the same RPC; no duplicated rules.
+
+2026-04-18 — **Optimistic snapshot/revert is the default for detail-screen edits.** Pattern: capture `const snapshot = lead`, apply `setLead({...lead, ...updates})` locally, fire the Supabase update, on success replace with the server's response (gets fresh `updated_at`, joined rows); on error restore snapshot + `haptics.error()` + `Alert.alert`. Reference: `app/(app)/lead/[id].tsx` `patch()` helper. Makes the UI feel instant on flaky networks and never leaves the screen in a lying state.
+
+2026-04-18 — **Save-on-blur for embedded text fields in detail screens.** Don't save on every keystroke (N round-trips) and don't save on mount (stomps the server). Local text state + `onBlur` that compares `clean !== (lead.field || null)` before calling the patch. Notes + next-action both use this in `lead/[id].tsx`. Pair with a `useEffect` that syncs local state from `lead.field` so external refreshes don't lose user input.
+
+2026-04-18 — **Confirm backward + closed stage moves, one-tap forward.** Reps move leads forward constantly, backward rarely. `Alert.alert` on `newStage === 'won' || newStage === 'lost' || toIdx < fromIdx`; everything else is one-tap + `haptics.bump()`. `haptics.success()` only on `won`. Captured in `lead/[id].tsx` `confirmStage()`.
+
+2026-04-18 — **Quick-date chips beat a native date picker for mobile sales flows.** Field reps almost always want "today / tomorrow / +3 days / +1 week / clear." Shipping those as a `Chip` row is faster than tapping into a native picker AND avoids adding `@react-native-community/datetimepicker` as a dep. Only add the picker when someone explicitly asks for an arbitrary future date.
+
+2026-04-18 — **PowerShell `(app)` is a subexpression — quote EVERY path.** `git add app/(app)/lead.tsx ...` fails with `"The term 'app' is not recognized as the name of a cmdlet"` because PowerShell parses `(app)` as a subexpression call. Partial quoting (just `[id].tsx`) still breaks the rest. Rule: if any path contains `(`, `)`, `[`, or `]`, quote **all** paths in the command.
+
 2026-04-18 — **ErrorBoundary must wrap providers, not just the router.** Auth/Query crashes at boot are swallowed silently if the boundary sits inside them. Put it at the absolute outermost layer of `app/_layout.tsx`.
 
 2026-04-18 — **Two-interval pattern for live clocks.** Fast display tick (1s) + slow server heartbeat (30s) beats unifying on one cadence. UI never drifts >1s; network stays at 2 req/min.
