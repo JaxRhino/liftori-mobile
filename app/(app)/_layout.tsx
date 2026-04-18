@@ -90,6 +90,7 @@ export default function AppLayout() {
       {/* Pushable routes — hidden from the tab bar. */}
       <Tabs.Screen name="notifications" options={{ href: null }} />
       <Tabs.Screen name="bug-report" options={{ href: null }} />
+      <Tabs.Screen name="settings" options={{ href: null }} />
     </Tabs>
   );
 }

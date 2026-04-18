@@ -178,8 +178,11 @@ export default function MoreScreen() {
     {
       icon: <Settings size={20} color={colors.textSecondary} />,
       title: 'Settings',
-      subtitle: 'Appearance, cache',
-      wave: 'Soon',
+      subtitle: 'Updates, about, preferences',
+      onPress: () => {
+        haptics.tap();
+        router.push('/settings' as any);
+      },
     },
     {
       icon: <HelpCircle size={20} color={colors.textSecondary} />,
@@ -190,7 +193,7 @@ export default function MoreScreen() {
   ];
 
   const appVersion = Constants.expoConfig?.version ?? '0.1.0';
-  const buildLabel = `v${appVersion} · Wave 9`;
+  const buildLabel = `v${appVersion} · Wave 10`;
 
   return (
     <SafeScreen bottom="skip" scroll>
