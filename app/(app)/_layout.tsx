@@ -87,6 +87,8 @@ export default function AppLayout() {
           tabBarButton: (props) => <HapticTabButton {...props} />,
         }}
       />
+      {/* Pushable routes — hidden from the tab bar. */}
+      <Tabs.Screen name="notifications" options={{ href: null }} />
     </Tabs>
   );
 }

@@ -7,8 +7,9 @@
  * wave" rows remain placeholders until those features ship.
  */
 import React, { useEffect, useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, AppStateStatus, StyleSheet, Text, View } from 'react-native';
 import Constants from 'expo-constants';
+import { useRouter } from 'expo-router';
 import {
   Bell,
   Bug,
@@ -38,6 +39,10 @@ import {
   formatHours,
   tierFor,
 } from '@/lib/pulseService';
+import {
+  fetchUnreadCount,
+  subscribeToNotifications,
+} from '@/lib/notificationsService';
 import { colors, radii, spacing, typography } from '@/lib/theme';
 import * as haptics from '@/lib/haptics';
 
@@ -46,14 +51,18 @@ type Row = {
   title: string;
   subtitle: string;
   wave?: string;
+  badge?: string;
+  onPress?: () => void;
 };
 
 export default function MoreScreen() {
   const { profile, user, isAdmin, isFounder, signOut } = useAuth();
+  const router = useRouter();
   const clock = useClock();
   const [signingOut, setSigningOut] = useState(false);
   const [tier, setTier] = useState<PulseTier | null>(null);
   const [ttd, setTtd] = useState<number>(0);
+  const [unreadNotifs, setUnreadNotifs] = useState<number>(0);
 
   // Pull the user's tier + TTD from v_pulse_all_time
   useEffect(() => {
@@ -74,6 +83,40 @@ export default function MoreScreen() {
       alive = false;
     };
   }, [user?.id, clock.isRunning]);
+
+  // Unread notifications badge — refetch on focus + subscribe for live bumps
+  useEffect(() => {
+    if (!user?.id) return;
+    let alive = true;
+
+    const refresh = async () => {
+      try {
+        const n = await fetchUnreadCount(user.id);
+        if (alive) setUnreadNotifs(n);
+      } catch {
+        // non-fatal
+      }
+    };
+
+    void refresh();
+
+    const appSub = AppState.addEventListener(
+      'change',
+      (state: AppStateStatus) => {
+        if (state === 'active') void refresh();
+      },
+    );
+
+    const offRT = subscribeToNotifications(user.id, () => {
+      if (alive) setUnreadNotifs((prev) => prev + 1);
+    });
+
+    return () => {
+      alive = false;
+      appSub.remove();
+      offRT();
+    };
+  }, [user?.id]);
 
   const handleSignOut = () => {
     haptics.thud();
@@ -101,8 +144,15 @@ export default function MoreScreen() {
     {
       icon: <Bell size={20} color={colors.amber} />,
       title: 'Notifications',
-      subtitle: 'Push, chat, announcements',
-      wave: 'Soon',
+      subtitle:
+        unreadNotifs > 0
+          ? `${unreadNotifs} unread`
+          : 'Push, chat, announcements',
+      badge: unreadNotifs > 0 ? (unreadNotifs > 99 ? '99+' : String(unreadNotifs)) : undefined,
+      onPress: () => {
+        haptics.tap();
+        router.push('/notifications' as any);
+      },
     },
     {
       icon: <Megaphone size={20} color={colors.purple} />,
@@ -137,7 +187,7 @@ export default function MoreScreen() {
   ];
 
   const appVersion = Constants.expoConfig?.version ?? '0.1.0';
-  const buildLabel = `v${appVersion} · Wave 5`;
+  const buildLabel = `v${appVersion} · Wave 8`;
 
   return (
     <SafeScreen bottom="skip" scroll>
@@ -230,14 +280,25 @@ export default function MoreScreen() {
         <Text style={[styles.sectionLabel, { marginTop: spacing.xl }]}>Sections</Text>
         <View>
           {rows.map((row) => (
-            <Card key={row.title} variant="flat" style={styles.row}>
+            <Card
+              key={row.title}
+              variant="flat"
+              onPress={row.onPress}
+              style={styles.row}
+            >
               <View style={styles.rowInner}>
                 <View style={styles.rowIcon}>{row.icon}</View>
                 <View style={styles.rowText}>
                   <Text style={styles.rowTitle}>{row.title}</Text>
                   <Text style={styles.rowSubtitle}>{row.subtitle}</Text>
                 </View>
-                {row.wave ? <Text style={styles.wavePill}>{row.wave}</Text> : null}
+                {row.badge ? (
+                  <View style={styles.badgePill}>
+                    <Text style={styles.badgePillText}>{row.badge}</Text>
+                  </View>
+                ) : row.wave ? (
+                  <Text style={styles.wavePill}>{row.wave}</Text>
+                ) : null}
               </View>
             </Card>
           ))}
@@ -428,6 +489,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: 3,
     borderRadius: radii.pill,
+  },
+  badgePill: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 7,
+    borderRadius: radii.pill,
+    backgroundColor: colors.amber,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgePillText: {
+    ...typography.micro,
+    color: colors.textOnAccent,
+    fontWeight: '800',
+    fontSize: 11,
+    letterSpacing: 0.2,
   },
   versionText: {
     textAlign: 'center',
