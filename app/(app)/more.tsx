@@ -18,10 +18,12 @@ import {
   LogOut,
   Megaphone,
   Play,
+  QrCode,
   Settings,
   ShieldCheck,
   Sparkles,
   Square,
+  TrendingUp,
   User,
   Video,
 } from 'lucide-react-native';
@@ -140,6 +142,24 @@ export default function MoreScreen() {
       title: 'My Profile',
       subtitle: 'Avatar, name, title',
       wave: 'Soon',
+    },
+    {
+      icon: <QrCode size={20} color={colors.sky} />,
+      title: 'My QR',
+      subtitle: 'Your networking link + attribution',
+      onPress: () => {
+        haptics.tap();
+        router.push('/my-qr' as any);
+      },
+    },
+    {
+      icon: <TrendingUp size={20} color={colors.amber} />,
+      title: 'Investor QR',
+      subtitle: 'Confidential investor intake + founder calls',
+      onPress: () => {
+        haptics.tap();
+        router.push('/investor-qr' as any);
+      },
     },
     {
       icon: <Bell size={20} color={colors.amber} />,
