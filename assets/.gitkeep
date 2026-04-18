@@ -1,0 +1,3 @@
+# Generated assets land here.
+# Run `npm run assets:gen` to render icon.png, adaptive-icon.png, splash.png,
+# favicon.png, and notification-icon.png from ../assets-src/*.svg.

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Android adaptive icon FOREGROUND layer.
+    Android masks a 66% safe zone, so the mark sits centered in the middle ~62%.
+    The background layer is flat emerald-slate (see app.config.ts -> adaptiveIcon.backgroundColor).
+  -->
+  <defs>
+    <linearGradient id="bar" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+      <feOffset dx="0" dy="10" result="shadow"/>
+      <feColorMatrix in="shadow" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.35 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- three rising bars, tighter safe-zone geometry (64%-ish of 1024) -->
+  <g filter="url(#softShadow)" transform="translate(0 40)">
+    <rect x="340" y="560" width="96" height="160" rx="26" fill="url(#bar)" opacity="0.55"/>
+    <rect x="476" y="460" width="96" height="260" rx="26" fill="url(#bar)" opacity="0.82"/>
+    <rect x="612" y="340" width="96" height="380" rx="26" fill="url(#bar)"/>
+  </g>
+
+  <rect x="340" y="746" width="368" height="8" rx="4" fill="#10b981" opacity="0.55" transform="translate(0 40)"/>
+</svg>
