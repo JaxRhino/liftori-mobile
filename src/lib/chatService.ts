@@ -28,6 +28,22 @@ export interface ChatChannel {
   created_at: string;
 }
 
+/**
+ * Attachment shape that mirrors the admin web app — posted to the
+ * `chat-files` public storage bucket at `chat/{userId}/{timestamp}.{ext}`.
+ * Both mobile + admin render the same JSON, so cross-posting works.
+ */
+export interface ChatAttachment {
+  url: string;
+  size: number;
+  filename: string;
+  /** 'image' for renderable inline, 'file' for generic download link. */
+  file_type: 'image' | 'file';
+  /** Optional — populated when uploader knows the dimensions. */
+  width?: number;
+  height?: number;
+}
+
 export interface ChatMessage {
   id: string;
   channel_id: string;
@@ -35,6 +51,7 @@ export interface ChatMessage {
   content: string;
   edited_at: string | null;
   created_at: string;
+  attachments?: ChatAttachment[] | null;
   /** joined profile — nullable because older rows may not resolve. */
   sender?: {
     id: string;
@@ -96,23 +113,112 @@ export async function getLastMessage(channelId: string): Promise<ChatMessage | n
 // ─── Writes ──────────────────────────────────────────────────────────
 export async function sendMessage(
   channelId: string,
-  content: string
+  content: string,
+  attachments?: ChatAttachment[] | null
 ): Promise<ChatMessage> {
   const trimmed = content.trim();
-  if (!trimmed) throw new Error('Message is empty');
+  const hasAttachments = !!attachments && attachments.length > 0;
+  if (!trimmed && !hasAttachments) throw new Error('Message is empty');
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) throw new Error('Not signed in');
+
+  // The DB column has NOT NULL on content, so use a thin placeholder
+  // when we're sending a pure-attachment message (matches admin web behavior).
+  const body =
+    trimmed || (hasAttachments ? (attachments![0].file_type === 'image' ? '📷' : '📎') : '');
+
+  // chat_messages also requires sender_name NOT NULL — grab the profile
+  // to stamp it alongside sender_id.
+  const { data: prof } = await supabase
+    .from('profiles')
+    .select('full_name, email, avatar_url, role')
+    .eq('id', user.id)
+    .maybeSingle();
+  const senderName =
+    prof?.full_name || prof?.email?.split('@')[0] || user.email?.split('@')[0] || 'Unknown';
+
   const { data, error } = await supabase
     .from('chat_messages')
-    .insert({ channel_id: channelId, sender_id: user.id, content: trimmed })
+    .insert({
+      channel_id: channelId,
+      sender_id: user.id,
+      sender_name: senderName,
+      sender_role: prof?.role || null,
+      sender_avatar_url: prof?.avatar_url || null,
+      content: body,
+      attachments: hasAttachments ? attachments : null,
+    })
     .select(
       '*, sender:profiles!chat_messages_sender_id_fkey(id, full_name, email, avatar_url)'
     )
     .single();
   if (error) throw error;
   return data as ChatMessage;
+}
+
+// ─── Storage / uploads ───────────────────────────────────────────────
+/**
+ * Upload a local file URI (from expo-image-picker) to the `chat-files`
+ * storage bucket under `chat/{userId}/{timestamp}.{ext}`. Returns a
+ * ready-to-post ChatAttachment descriptor.
+ *
+ * Uses an ArrayBuffer body so React Native's fetch-to-Blob path doesn't
+ * silently post a 0-byte file (known Supabase/Expo footgun on iOS).
+ */
+export async function uploadChatAttachment(
+  localUri: string,
+  opts: { filename?: string; mimeType?: string; width?: number; height?: number } = {}
+): Promise<ChatAttachment> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not signed in');
+
+  // Derive filename + extension
+  const urlPath = localUri.split('?')[0];
+  const inferredName = urlPath.split('/').pop() || `image-${Date.now()}.jpg`;
+  const filename = opts.filename || inferredName;
+  const extFromName = filename.includes('.') ? filename.split('.').pop()! : 'jpg';
+  const ext = (extFromName || 'jpg').toLowerCase();
+  const mimeType =
+    opts.mimeType ||
+    (ext === 'png'
+      ? 'image/png'
+      : ext === 'webp'
+        ? 'image/webp'
+        : ext === 'heic' || ext === 'heif'
+          ? 'image/heic'
+          : ext === 'gif'
+            ? 'image/gif'
+            : 'image/jpeg');
+
+  // Read the local file as an ArrayBuffer for Supabase JS.
+  const resp = await fetch(localUri);
+  if (!resp.ok) throw new Error(`Couldn't read image (${resp.status})`);
+  const arrayBuf = await resp.arrayBuffer();
+  const size = arrayBuf.byteLength;
+
+  const path = `chat/${user.id}/${Date.now()}.${ext}`;
+
+  const { error: upErr } = await supabase.storage
+    .from('chat-files')
+    .upload(path, arrayBuf, {
+      contentType: mimeType,
+      upsert: false,
+    });
+  if (upErr) throw upErr;
+
+  const { data: pub } = supabase.storage.from('chat-files').getPublicUrl(path);
+  return {
+    url: pub.publicUrl,
+    size,
+    filename,
+    file_type: mimeType.startsWith('image/') ? 'image' : 'file',
+    width: opts.width,
+    height: opts.height,
+  };
 }
 
 // ─── Real-time ──────────────────────────────────────────────────────

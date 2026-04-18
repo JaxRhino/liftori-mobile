@@ -1,17 +1,24 @@
 /**
  * Chat conversation — per-channel messages + composer + real-time insert sub.
  *
- * Pattern:
- *   • Fetch last 50 messages on mount (oldest-first in state)
- *   • Subscribe to INSERTs for this channel and append to state
- *   • Composer at the bottom — enter-to-send, multi-line friendly
- *   • KeyboardAvoiding so the composer sits above the keyboard
+ * Wave 12 additions:
+ *   • Camera + gallery buttons in the composer (expo-image-picker already
+ *     installed; app.config.ts already grants NSCameraUsageDescription +
+ *     NSPhotoLibraryUsageDescription and the Android CAMERA permission).
+ *   • Attachment preview strip above the text input before sending.
+ *   • Image rendering in MessageBubble with tap-to-expand lightbox.
+ *   • Uploads land in the shared `chat-files` Supabase bucket with the
+ *     same JSON shape the admin web app posts, so cross-posting works.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   ListRenderItem,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -20,12 +27,14 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Send } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { Camera, ImagePlus, Send, X } from 'lucide-react-native';
 import { SafeScreen } from '@/components/SafeScreen';
 import { Header } from '@/components/Header';
 import { Avatar } from '@/components/Avatar';
 import { EmptyState } from '@/components/EmptyState';
 import {
+  ChatAttachment,
   ChatChannel,
   ChatMessage,
   channelDisplayName,
@@ -34,10 +43,21 @@ import {
   listMessages,
   sendMessage,
   subscribeToChannel,
+  uploadChatAttachment,
 } from '@/lib/chatService';
 import { useAuth } from '@/lib/AuthContext';
 import { colors, radii, spacing, typography } from '@/lib/theme';
 import * as haptics from '@/lib/haptics';
+
+type PendingAttachment = {
+  /** Temp key for the preview strip. */
+  key: string;
+  localUri: string;
+  filename?: string;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+};
 
 export default function ChatChannelScreen() {
   const { channelId } = useLocalSearchParams<{ channelId: string }>();
@@ -50,6 +70,8 @@ export default function ChatChannelScreen() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
@@ -97,14 +119,104 @@ export default function ChatChannelScreen() {
     return () => clearTimeout(t);
   }, [messages.length]);
 
+  // ─── Attachment handlers ──────────────────────────────────────────
+  const pickFromLibrary = useCallback(async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          'Photo access needed',
+          'Enable Photos permission in Settings to attach images.'
+        );
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+        allowsEditing: false,
+        allowsMultipleSelection: true,
+        selectionLimit: 6,
+      });
+      if (res.canceled) return;
+      const next: PendingAttachment[] = res.assets.map((a, i) => ({
+        key: `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
+        localUri: a.uri,
+        filename: a.fileName ?? undefined,
+        mimeType: a.mimeType ?? undefined,
+        width: a.width,
+        height: a.height,
+      }));
+      setPending((prev) => [...prev, ...next].slice(0, 6));
+      haptics.tap();
+    } catch (e: any) {
+      setError(e?.message || 'Couldn\u2019t open library');
+    }
+  }, []);
+
+  const takePhoto = useCallback(async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          'Camera access needed',
+          'Enable Camera permission in Settings to take photos.'
+        );
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+        allowsEditing: false,
+      });
+      if (res.canceled) return;
+      const a = res.assets[0];
+      setPending((prev) =>
+        [
+          ...prev,
+          {
+            key: `${Date.now()}-cam-${Math.random().toString(36).slice(2, 7)}`,
+            localUri: a.uri,
+            filename: a.fileName ?? undefined,
+            mimeType: a.mimeType ?? undefined,
+            width: a.width,
+            height: a.height,
+          },
+        ].slice(0, 6)
+      );
+      haptics.tap();
+    } catch (e: any) {
+      setError(e?.message || 'Couldn\u2019t open camera');
+    }
+  }, []);
+
+  const removePending = useCallback((key: string) => {
+    setPending((prev) => prev.filter((p) => p.key !== key));
+  }, []);
+
+  // ─── Send ─────────────────────────────────────────────────────────
   const send = useCallback(async () => {
     if (!channelId || sending) return;
     const body = draft.trim();
-    if (!body) return;
+    const hasAttachments = pending.length > 0;
+    if (!body && !hasAttachments) return;
     setSending(true);
     try {
-      await sendMessage(channelId, body);
+      let uploaded: ChatAttachment[] = [];
+      if (hasAttachments) {
+        uploaded = await Promise.all(
+          pending.map((p) =>
+            uploadChatAttachment(p.localUri, {
+              filename: p.filename,
+              mimeType: p.mimeType,
+              width: p.width,
+              height: p.height,
+            })
+          )
+        );
+      }
+      await sendMessage(channelId, body, uploaded.length > 0 ? uploaded : null);
       setDraft('');
+      setPending([]);
       haptics.success();
     } catch (e: any) {
       haptics.error();
@@ -112,7 +224,7 @@ export default function ChatChannelScreen() {
     } finally {
       setSending(false);
     }
-  }, [channelId, draft, sending]);
+  }, [channelId, draft, pending, sending]);
 
   const title = useMemo(
     () => (channel ? channelDisplayName(channel) : 'Loading…'),
@@ -136,6 +248,7 @@ export default function ChatChannelScreen() {
           msg={item}
           mine={mine}
           showMeta={showMeta}
+          onImagePress={(url) => setLightboxUrl(url)}
         />
       );
     },
@@ -187,13 +300,22 @@ export default function ChatChannelScreen() {
           />
         )}
 
+        {pending.length > 0 && (
+          <PendingStrip items={pending} onRemove={removePending} />
+        )}
+
         <Composer
           value={draft}
           onChange={setDraft}
           onSend={send}
+          onPickLibrary={pickFromLibrary}
+          onTakePhoto={takePhoto}
           sending={sending}
+          hasPending={pending.length > 0}
         />
       </KeyboardAvoidingView>
+
+      <Lightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
     </SafeScreen>
   );
 }
@@ -206,13 +328,24 @@ function MessageBubble({
   msg,
   mine,
   showMeta,
+  onImagePress,
 }: {
   msg: ChatMessage;
   mine: boolean;
   showMeta: boolean;
+  onImagePress: (url: string) => void;
 }) {
   const who =
     msg.sender?.full_name || msg.sender?.email?.split('@')[0] || 'Unknown';
+  const atts = (msg.attachments || []).filter((a) => !!a?.url);
+  const images = atts.filter((a) => a.file_type === 'image');
+  const files = atts.filter((a) => a.file_type !== 'image');
+  // If content is just the placeholder we add for pure-attachment messages,
+  // hide the text bubble so we don't show a lonely camera emoji.
+  const isPlaceholder =
+    images.length > 0 && (msg.content === '📷' || msg.content === '📎');
+  const showText = !!msg.content && !isPlaceholder;
+
   return (
     <View style={[styles.bubbleRow, mine && styles.bubbleRowMine]}>
       {!mine && (
@@ -231,22 +364,96 @@ function MessageBubble({
             <Text style={styles.metaTime}>{formatMessageTime(msg.created_at)}</Text>
           </View>
         )}
-        <View
-          style={[
-            styles.bubble,
-            mine ? styles.bubbleMine : styles.bubbleOther,
-          ]}
-        >
-          <Text
+
+        {images.length > 0 && (
+          <View
             style={[
-              styles.bubbleText,
-              mine ? styles.bubbleTextMine : styles.bubbleTextOther,
+              styles.imageGrid,
+              mine ? styles.imageGridMine : styles.imageGridOther,
             ]}
           >
-            {msg.content}
-          </Text>
-        </View>
+            {images.map((img) => (
+              <Pressable
+                key={img.url}
+                onPress={() => onImagePress(img.url)}
+                style={styles.imageTile}
+              >
+                <Image
+                  source={{ uri: img.url }}
+                  style={styles.imageTileImg}
+                  resizeMode="cover"
+                />
+              </Pressable>
+            ))}
+          </View>
+        )}
+
+        {showText && (
+          <View
+            style={[
+              styles.bubble,
+              mine ? styles.bubbleMine : styles.bubbleOther,
+              images.length > 0 && styles.bubbleAfterImage,
+            ]}
+          >
+            <Text
+              style={[
+                styles.bubbleText,
+                mine ? styles.bubbleTextMine : styles.bubbleTextOther,
+              ]}
+            >
+              {msg.content}
+            </Text>
+          </View>
+        )}
+
+        {files.map((f) => (
+          <View
+            key={f.url}
+            style={[
+              styles.filePill,
+              mine ? styles.filePillMine : styles.filePillOther,
+            ]}
+          >
+            <Text
+              style={[
+                styles.fileName,
+                mine ? styles.bubbleTextMine : styles.bubbleTextOther,
+              ]}
+              numberOfLines={1}
+            >
+              📎 {f.filename}
+            </Text>
+          </View>
+        ))}
       </View>
+    </View>
+  );
+}
+
+function PendingStrip({
+  items,
+  onRemove,
+}: {
+  items: PendingAttachment[];
+  onRemove: (key: string) => void;
+}) {
+  return (
+    <View style={styles.pendingStrip}>
+      {items.map((p) => (
+        <View key={p.key} style={styles.pendingTile}>
+          <Image source={{ uri: p.localUri }} style={styles.pendingImg} />
+          <Pressable
+            onPress={() => onRemove(p.key)}
+            style={styles.pendingRemove}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Remove attachment"
+          >
+            <X size={12} color={colors.textOnAccent} strokeWidth={2.6} />
+          </Pressable>
+        </View>
+      ))}
     </View>
   );
 }
@@ -255,16 +462,48 @@ function Composer({
   value,
   onChange,
   onSend,
+  onPickLibrary,
+  onTakePhoto,
   sending,
+  hasPending,
 }: {
   value: string;
   onChange: (next: string) => void;
   onSend: () => void;
+  onPickLibrary: () => void;
+  onTakePhoto: () => void;
   sending: boolean;
+  hasPending: boolean;
 }) {
-  const canSend = value.trim().length > 0 && !sending;
+  const canSend = (value.trim().length > 0 || hasPending) && !sending;
   return (
     <View style={styles.composer}>
+      <Pressable
+        onPress={onTakePhoto}
+        disabled={sending}
+        style={({ pressed }) => [
+          styles.attachBtn,
+          pressed && styles.attachBtnPressed,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Take photo"
+      >
+        <Camera size={20} color={colors.textSecondary} strokeWidth={2} />
+      </Pressable>
+
+      <Pressable
+        onPress={onPickLibrary}
+        disabled={sending}
+        style={({ pressed }) => [
+          styles.attachBtn,
+          pressed && styles.attachBtnPressed,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Pick photo from library"
+      >
+        <ImagePlus size={20} color={colors.textSecondary} strokeWidth={2} />
+      </Pressable>
+
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -273,6 +512,7 @@ function Composer({
         multiline
         style={styles.input}
         autoCapitalize="sentences"
+        editable={!sending}
       />
       <Pressable
         onPress={onSend}
@@ -285,13 +525,53 @@ function Composer({
         accessibilityRole="button"
         accessibilityLabel="Send message"
       >
-        <Send
-          size={18}
-          color={canSend ? colors.textOnAccent : colors.textMuted}
-          strokeWidth={2.4}
-        />
+        {sending ? (
+          <ActivityIndicator size="small" color={colors.textOnAccent} />
+        ) : (
+          <Send
+            size={18}
+            color={canSend ? colors.textOnAccent : colors.textMuted}
+            strokeWidth={2.4}
+          />
+        )}
       </Pressable>
     </View>
+  );
+}
+
+function Lightbox({
+  url,
+  onClose,
+}: {
+  url: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      visible={!!url}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.lightboxBackdrop} onPress={onClose}>
+        {url && (
+          <Image
+            source={{ uri: url }}
+            style={styles.lightboxImg}
+            resizeMode="contain"
+          />
+        )}
+        <Pressable
+          onPress={onClose}
+          style={styles.lightboxClose}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Close preview"
+        >
+          <X size={22} color="#fff" strokeWidth={2.4} />
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -366,6 +646,9 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderRadius: radii.lg,
   },
+  bubbleAfterImage: {
+    marginTop: 4,
+  },
   bubbleOther: {
     backgroundColor: colors.surface800,
     borderBottomLeftRadius: radii.xs,
@@ -385,6 +668,83 @@ const styles = StyleSheet.create({
     color: colors.textOnAccent,
   },
 
+  // Image attachments in bubbles
+  imageGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    maxWidth: 260,
+  },
+  imageGridMine: {
+    justifyContent: 'flex-end',
+  },
+  imageGridOther: {
+    justifyContent: 'flex-start',
+  },
+  imageTile: {
+    borderRadius: radii.md,
+    overflow: 'hidden',
+    backgroundColor: colors.surface800,
+  },
+  imageTileImg: {
+    width: 200,
+    height: 200,
+    maxWidth: 260,
+  },
+
+  // Generic (non-image) file pill
+  filePill: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.lg,
+    marginTop: 4,
+  },
+  filePillMine: {
+    backgroundColor: colors.emerald,
+  },
+  filePillOther: {
+    backgroundColor: colors.surface800,
+  },
+  fileName: {
+    ...typography.body,
+    fontSize: 13,
+  },
+
+  // Pending attachment strip (above composer)
+  pendingStrip: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface900,
+  },
+  pendingTile: {
+    position: 'relative',
+    width: 64,
+    height: 64,
+    borderRadius: radii.md,
+    overflow: 'hidden',
+    backgroundColor: colors.surface800,
+  },
+  pendingImg: {
+    width: '100%',
+    height: '100%',
+  },
+  pendingRemove: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
   // Composer
   composer: {
     flexDirection: 'row',
@@ -396,6 +756,17 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     backgroundColor: colors.surface900,
+  },
+  attachBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: radii.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface800,
+  },
+  attachBtnPressed: {
+    opacity: 0.7,
   },
   input: {
     flex: 1,
@@ -423,5 +794,29 @@ const styles = StyleSheet.create({
   },
   sendBtnPressed: {
     opacity: 0.85,
+  },
+
+  // Lightbox
+  lightboxBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  lightboxImg: {
+    width: '100%',
+    height: '100%',
+  },
+  lightboxClose: {
+    position: 'absolute',
+    top: 48,
+    right: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
