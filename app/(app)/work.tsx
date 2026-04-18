@@ -5,8 +5,7 @@
  *   • Leads — my open sales_leads grouped by product (LABOS / Consulting / Builds)
  *   • Tasks — next-action items across my open leads, sorted by date
  *
- * Taps route to the desktop-style lead detail in a future wave; for now they
- * deep-link by id so we can wire it up once mobile detail screens land.
+ * Taps deep-link to `/lead/:id` — the Wave 6 mobile detail screen.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -97,7 +96,7 @@ export default function WorkScreen() {
 
   const openLead = (id: string) => {
     haptics.tap();
-    router.push(`/work?lead=${id}` as any);
+    router.push(`/lead/${id}` as any);
   };
 
   return (
