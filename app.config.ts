@@ -1,12 +1,14 @@
-import type { ExpoConfig, ConfigContext } from 'expo/config';
-
 /**
  * Liftori Mobile — Expo app config
  *
- * Uses app.config.ts (instead of app.json) so we can read env at build time
- * and compute values dynamically (e.g. runtimeVersion per platform).
+ * Written in plain JS (no TS type imports/annotations) so Node can parse
+ * this file directly without a TS transpile step. This prevents EAS Build
+ * from failing with "Unexpected token '{'" when @expo/config falls back to
+ * raw Node parsing in CI environments where ts-node isn't fully wired up.
+ *
+ * Kept as .ts filename for zero-config Expo resolution; content is pure JS.
  */
-export default ({ config }: ConfigContext): ExpoConfig => ({
+module.exports = ({ config }) => ({
   ...config,
   name: 'Liftori',
   slug: 'liftori-mobile',
