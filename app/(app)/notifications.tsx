@@ -275,7 +275,7 @@ export default function NotificationsInbox() {
           <EmptyState
             icon={<Mail size={28} color={colors.textMuted} />}
             title="No notifications yet"
-            body="When something needs your attention, it will show up here."
+            description="When something needs your attention, it will show up here."
           />
         </View>
       ) : (

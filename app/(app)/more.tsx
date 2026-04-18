@@ -164,7 +164,10 @@ export default function MoreScreen() {
       icon: <Bug size={20} color={colors.rose} />,
       title: 'Report a Bug',
       subtitle: 'Submit from the field',
-      wave: 'Soon',
+      onPress: () => {
+        haptics.tap();
+        router.push('/bug-report' as any);
+      },
     },
     {
       icon: <Video size={20} color={colors.indigo} />,
@@ -187,7 +190,7 @@ export default function MoreScreen() {
   ];
 
   const appVersion = Constants.expoConfig?.version ?? '0.1.0';
-  const buildLabel = `v${appVersion} · Wave 8`;
+  const buildLabel = `v${appVersion} · Wave 9`;
 
   return (
     <SafeScreen bottom="skip" scroll>

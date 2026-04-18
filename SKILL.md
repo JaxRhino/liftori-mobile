@@ -428,6 +428,10 @@ export async function createRow(payload: Partial<MyRow>): Promise<MyRow> {
 
 <!-- Format: [Date] — [Pattern] — [Context] -->
 
+2026-04-18 — **Capture device info at submit time, not at screen mount.** Bug reports from OTA builds need `Updates.updateId` and `Updates.channel` alongside `Constants.expoConfig.version` — the JS bundle can drift ahead of the APK's `version` by several OTA updates. Snapshot everything via `captureDeviceInfo()` when the form submits so the report reflects the build they actually hit the bug on, not the build they opened the screen on. Reference: `src/lib/bugReportsService.ts`.
+
+2026-04-18 — **EmptyState prop is `description`, not `body`.** Double-checked in `components/EmptyState.tsx`. Passing `body` is a silent no-op — the description just doesn't render. Bit me once in notifications.tsx and once in bug-report.tsx; capture here so it doesn't bite a third time.
+
 2026-04-18 — **`href: null` hides a Tabs.Screen from the tab bar without leaving the router.** The notifications inbox lives inside `(app)/notifications.tsx` and is still routable via `router.push('/notifications')`, but adding `<Tabs.Screen name="notifications" options={{ href: null }} />` in the layout keeps it out of the visible tab strip. Cleaner than nesting a separate Stack navigator just to hide one screen. Reference: `app/(app)/_layout.tsx`.
 
 2026-04-18 — **HEAD + count beats SELECT + length for unread badges.** `supabase.from('notifications').select('id', { count: 'exact', head: true }).eq(...)` returns a count without any rows — Supabase responds with `Content-Range` and an empty body. Use for anywhere you render just a number (More-tab unread count, pending approvals badge), never pull the full row set for a count. Reference: `fetchUnreadCount` in `src/lib/notificationsService.ts`.
