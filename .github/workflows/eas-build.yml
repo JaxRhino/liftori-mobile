@@ -1,8 +1,12 @@
 name: EAS Build
 
+# Manual only. Native APK rebuilds take 15min+ and are only needed when:
+#   • app version bumps
+#   • native config changes (app.config.ts plugins, permissions, entitlements)
+#   • new native dependency added
+# For every other change (JS/TS only) use the auto-firing `eas-update.yml`
+# workflow, which ships JS bundles to installed apps over-the-air in ~30s.
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
     inputs:
       platform:

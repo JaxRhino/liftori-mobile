@@ -287,20 +287,49 @@ Work and Home filter to leads where `(!assigned_to || assigned_to === user?.id)`
 
 **Use multiple `-m` flags for multi-paragraph messages** — never heredocs in PowerShell (swallows the next command). See memory `feedback_heredoc_push_chain.md`.
 
-## EAS Build Pipeline
+## Deploy Pipeline — OTA Updates vs. Native Builds
 
-- Workflow: `.github/workflows/eas-build.yml`
-- Triggers: push to `main`/`master`, or manual dispatch (`workflow_dispatch`) with `platform` + `profile` inputs
+**The default deploy for any JS/TS change is an OTA update, not a full rebuild.** Every push to `main` fires `eas update`, which ships a new JS bundle to installed apps in ~30 seconds. Full native APK rebuilds (15 min) are reserved for app version bumps or native config changes.
+
+### OTA Update — default for every push
+
+- Workflow: `.github/workflows/eas-update.yml`
+- Trigger: push to `main`/`master` (auto), or manual dispatch with `channel` + `message` inputs
+- Command: `eas update --channel <channel> --message "<commit msg>"`
+- Channels map 1:1 to build profiles (`preview`, `production`, `development`) via the `channel` key in each `eas.json` profile
+- App-side: `src/lib/updates.ts` + `UpdatesListener` in `app/_layout.tsx` silently check on boot + on `AppState='active'`, fetch the new bundle, and apply it on the next cold start
+- Bypass: include `[skip update]` in the commit message if you only touched docs
+- Dev safety: `__DEV__` and `Updates.isEnabled === false` both short-circuit the updater, so running `expo start` on a dev client never fights Metro
+
+**When the app boots with a staged update:** users see no interruption. The new bundle is applied when they next cold-start (closing/reopening, or after the OS kills the backgrounded app). Most users see updates within a few hours without noticing.
+
+### Native build — manual, rare
+
+- Workflow: `.github/workflows/eas-build.yml` (`workflow_dispatch` only — no auto-fire)
+- Run when you:
+  - bump `version` in `app.config.ts`
+  - add/modify a native plugin in `plugins: [...]`
+  - change permissions / entitlements / `infoPlist` / `UIBackgroundModes`
+  - install a new native dependency (anything with an `app.plugin.js` or autolinked native code)
 - Profiles in `eas.json`:
-  - `development` — iOS sim, dev client, internal
-  - `preview` — iOS device + Android APK, internal (this is the one Ryan sideloads)
-  - `production` — autoIncrement enabled
+  - `development` — iOS sim, dev client, internal, `channel: development`
+  - `preview` — iOS device + Android APK, internal, `channel: preview` (this is the one Ryan sideloads)
+  - `production` — autoIncrement enabled, `channel: production`
 
 **Typical APK build:** 8–15 min for SDK 51. Download directly from the build detail page and sideload.
+
+### Rule of thumb
+
+- Added a screen, tweaked copy, fixed a bug in a service, added a component? → OTA (nothing to do; auto-fires on push).
+- Bumped `expo-*` or `react-native-*` to a version with native code changes, added a permission, changed the app icon? → Manually trigger `eas-build.yml` from the Actions tab.
 
 ### EAS + OneDrive Tar Failure
 
 If you ever run `eas build` **locally**, "Prepare project" dies with a tar permission error when source is under OneDrive. Move the checkout to `C:\dev\liftori-mobile` first. The GitHub Actions path bypasses this because the runner clones fresh from GitHub. See memory `feedback_eas_onedrive_tarball.md`.
+
+### Runtime version discipline
+
+`runtimeVersion.policy: 'appVersion'` in `app.config.ts` means OTA updates **only land on APKs that share the same `version`** (currently `0.1.0`). If you bump `version`, every installed APK at the old version stops receiving updates until you ship a new APK. This is the feature, not a bug — it prevents a JS bundle written against new native APIs from crashing an old APK that doesn't have those APIs yet.
 
 ## New Screen Template
 
@@ -398,6 +427,10 @@ export async function createRow(payload: Partial<MyRow>): Promise<MyRow> {
 ## Hard-Won Gotchas (Learning Loop)
 
 <!-- Format: [Date] — [Pattern] — [Context] -->
+
+2026-04-18 — **OTA first, native builds last.** A full APK rebuild is a 15-minute tax that's only justified when the change requires native code. For anything JS-only (new screens, services, components, copy), rely on `eas update` — the commit→on-device time drops from 15 min to ~30 seconds. The update workflow auto-fires on every push to `main`; native rebuilds are manual-only via `eas-build.yml`'s `workflow_dispatch`. If a change requires a native rebuild (new permission, new plugin, bumped `version`), say so in the commit and manually trigger the build workflow. Skip an OTA with `[skip update]` in the commit message.
+
+2026-04-18 — **`runtimeVersion.policy: 'appVersion'` binds OTA bundles to the APK's `version`.** Bumping `version` in `app.config.ts` means every installed APK at the old version stops receiving OTA updates until users sideload the new APK. That's the correct behavior (a JS bundle written against new native APIs would crash an old APK without them), but remember to ship the APK update when bumping — otherwise testers will silently stop seeing new builds.
 
 2026-04-18 — **`AppState.addEventListener('change', …)` is the mobile `visibilitychange`.** Every poller / receiver in the app should hook `state === 'active'` alongside its `setInterval`, otherwise a phone left backgrounded overnight misses events until the next tick fires. Reference: `AnnouncementModal.tsx` refresh hook + `useClock.ts` resume logic.
 
