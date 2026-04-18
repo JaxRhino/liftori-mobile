@@ -64,7 +64,6 @@ module.exports = ({ config }) => ({
   plugins: [
     'expo-router',
     'expo-secure-store',
-    'expo-image',
     [
       'expo-notifications',
       {
