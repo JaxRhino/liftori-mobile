@@ -87,13 +87,28 @@ export default function AppLayout() {
           tabBarButton: (props) => <HapticTabButton {...props} />,
         }}
       />
-      {/* Pushable routes — hidden from the tab bar. */}
+      {/* Pushable routes — hidden from the tab bar.
+          IMPORTANT: every route folder under (app)/ must be listed here with
+          `href: null`, otherwise expo-router auto-adds it as a visible tab
+          on the far right with no title/icon — rendering as a "box with X"
+          fallback. This bit us with `lead/` which surfaced as a broken
+          sixth tab on Ryan's device. */}
+      <Tabs.Screen name="lead" options={{ href: null }} />
       <Tabs.Screen name="notifications" options={{ href: null }} />
       <Tabs.Screen name="bug-report" options={{ href: null }} />
       <Tabs.Screen name="settings" options={{ href: null }} />
+      <Tabs.Screen name="profile" options={{ href: null }} />
       <Tabs.Screen name="my-qr" options={{ href: null }} />
       <Tabs.Screen name="investor-qr" options={{ href: null }} />
       <Tabs.Screen name="hiring-qr" options={{ href: null }} />
+      <Tabs.Screen name="calendar" options={{ href: null }} />
+      <Tabs.Screen name="tasks" options={{ href: null }} />
+      <Tabs.Screen name="notes" options={{ href: null }} />
+      <Tabs.Screen name="customers" options={{ href: null }} />
+      <Tabs.Screen name="customer" options={{ href: null }} />
+      <Tabs.Screen name="docs" options={{ href: null }} />
+      <Tabs.Screen name="doc" options={{ href: null }} />
+      <Tabs.Screen name="assistant" options={{ href: null }} />
     </Tabs>
   );
 }

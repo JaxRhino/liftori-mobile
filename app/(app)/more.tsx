@@ -14,10 +14,14 @@ import {
   Bell,
   BriefcaseBusiness,
   Bug,
+  Calendar,
   Clock,
+  FolderOpen,
   HelpCircle,
+  ListTodo,
   LogOut,
   Megaphone,
+  NotebookPen,
   Play,
   QrCode,
   Settings,
@@ -26,6 +30,7 @@ import {
   Square,
   TrendingUp,
   User,
+  Users,
   Video,
 } from 'lucide-react-native';
 import { SafeScreen } from '@/components/SafeScreen';
@@ -139,10 +144,22 @@ export default function MoreScreen() {
 
   const rows: Row[] = [
     {
+      icon: <Sparkles size={20} color={colors.emerald} />,
+      title: 'Sage — AI Assistant',
+      subtitle: 'Plan, capture, schedule, and act',
+      onPress: () => {
+        haptics.tap();
+        router.push('/assistant' as any);
+      },
+    },
+    {
       icon: <User size={20} color={colors.emerald} />,
       title: 'My Profile',
       subtitle: 'Avatar, name, title',
-      wave: 'Soon',
+      onPress: () => {
+        haptics.tap();
+        router.push('/profile' as any);
+      },
     },
     {
       icon: <QrCode size={20} color={colors.sky} />,
@@ -169,6 +186,51 @@ export default function MoreScreen() {
       onPress: () => {
         haptics.tap();
         router.push('/hiring-qr' as any);
+      },
+    },
+    {
+      icon: <Users size={20} color={colors.indigo} />,
+      title: 'Customers',
+      subtitle: 'CRM pipeline, activities, follow-ups',
+      onPress: () => {
+        haptics.tap();
+        router.push('/customers' as any);
+      },
+    },
+    {
+      icon: <FolderOpen size={20} color={colors.purple} />,
+      title: 'Company Docs',
+      subtitle: 'Library, contracts, training, legal',
+      onPress: () => {
+        haptics.tap();
+        router.push('/docs' as any);
+      },
+    },
+    {
+      icon: <Calendar size={20} color={colors.sky} />,
+      title: 'Calendar',
+      subtitle: 'Month view, agenda, events',
+      onPress: () => {
+        haptics.tap();
+        router.push('/calendar' as any);
+      },
+    },
+    {
+      icon: <ListTodo size={20} color={colors.emerald} />,
+      title: 'Tasks',
+      subtitle: 'To-dos, priorities, due dates',
+      onPress: () => {
+        haptics.tap();
+        router.push('/tasks' as any);
+      },
+    },
+    {
+      icon: <NotebookPen size={20} color={colors.amber} />,
+      title: 'Notes',
+      subtitle: 'Quick capture, tags, pinning',
+      onPress: () => {
+        haptics.tap();
+        router.push('/notes' as any);
       },
     },
     {

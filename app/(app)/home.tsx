@@ -2,38 +2,37 @@
  * Home tab — "mission control" for today.
  *
  * What's on screen:
- *   • Greeting header + user avatar
- *   • Pulse clock chip (tap to clock in / tap to clock out, live HH:MM:SS)
+ *   • LIFTORI wordmark + greeting + avatar (flush-left header)
  *   • Pipeline glance (open leads, weighted $, won this month)
  *   • Today's actions (leads where next_action_date = today AND assigned to me)
  *   • Quick-action rail (+ New Lead, + Book Appointment)
  *
- * Data is fetched on mount and on pull-to-refresh. Clock ticks locally every
- * second via the useClock hook.
+ * The Pulse clock used to live here too — it moved to the More tab per
+ * Ryan's request (keeps the home surface focused on pipeline).
+ *
+ * Data is fetched on mount and on pull-to-refresh.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import {
-  ArrowUpRight,
   ClipboardList,
-  Play,
-  Square,
   TrendingUp,
   Target,
   Trophy,
   CalendarCheck,
   PhoneCall,
   Plus,
+  Mountain,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
 } from 'lucide-react-native';
 import { SafeScreen } from '@/components/SafeScreen';
-import { Header } from '@/components/Header';
 import { Card } from '@/components/Card';
 import { Avatar } from '@/components/Avatar';
 import { EmptyState } from '@/components/EmptyState';
 import { useAuth } from '@/lib/AuthContext';
-import { useClock } from '@/lib/useClock';
-import { formatClock } from '@/lib/pulseService';
 import {
   Lead,
   formatMoney,
@@ -42,15 +41,22 @@ import {
   stageMetaFor,
   summarize,
 } from '@/lib/leadsService';
-import { colors, radii, shadows, spacing, typography } from '@/lib/theme';
+import {
+  EosDashboard,
+  EosRock,
+  formatDueLabel,
+  getEosDashboard,
+  rockProgressColor,
+} from '@/lib/eosService';
+import { colors, radii, spacing, typography } from '@/lib/theme';
 import * as haptics from '@/lib/haptics';
 
 export default function HomeScreen() {
   const { profile, user } = useAuth();
   const router = useRouter();
-  const clock = useClock();
 
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [eos, setEos] = useState<EosDashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -64,19 +70,36 @@ export default function HomeScreen() {
     }
   }, []);
 
+  const fetchEos = useCallback(async () => {
+    try {
+      // We show all company rocks + issues, but only my own todos —
+      // matches the EOS "personal accountability" framing.
+      const data = await getEosDashboard({
+        rocksOwnerId: null,
+        todosOwnerId: user?.id,
+        rocksLimit: 10,
+        todosLimit: 10,
+      });
+      setEos(data);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[home] getEosDashboard failed:', e);
+    }
+  }, [user?.id]);
+
   useEffect(() => {
     void (async () => {
       setLoading(true);
-      await fetchLeads();
+      await Promise.all([fetchLeads(), fetchEos()]);
       setLoading(false);
     })();
-  }, [fetchLeads]);
+  }, [fetchLeads, fetchEos]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([fetchLeads(), clock.refresh()]);
+    await Promise.all([fetchLeads(), fetchEos()]);
     setRefreshing(false);
-  }, [fetchLeads, clock]);
+  }, [fetchLeads, fetchEos]);
 
   const firstName =
     profile?.full_name?.split(' ')[0] ?? profile?.email?.split('@')[0] ?? 'there';
@@ -92,24 +115,33 @@ export default function HomeScreen() {
 
   return (
     <SafeScreen bottom="skip" scroll onRefresh={onRefresh} refreshing={refreshing}>
-      <Header
-        title={greeting() + ','}
-        subtitle={`${firstName} — let's lift something today.`}
-        trailing={<Avatar name={profile?.full_name ?? profile?.email ?? 'L'} size="sm" />}
-      />
+      {/* Branded home header — LIFTORI wordmark + greeting, flush-left. */}
+      <View style={styles.homeHeader}>
+        <View style={styles.headerTopRow}>
+          <Text style={styles.wordmark}>LIFTORI</Text>
+          <Pressable
+            onPress={() => {
+              haptics.tap();
+              router.push('/profile' as any);
+            }}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Open profile"
+          >
+            <Avatar
+              name={profile?.full_name ?? profile?.email ?? 'L'}
+              url={profile?.avatar_url ?? undefined}
+              size="sm"
+            />
+          </Pressable>
+        </View>
+        <Text style={styles.greetingTitle}>{greeting()},</Text>
+        <Text style={styles.greetingSub}>
+          {firstName} — let&rsquo;s lift something today.
+        </Text>
+      </View>
 
       <View style={styles.body}>
-        {/* Clock chip */}
-        <ClockChip
-          running={clock.isRunning}
-          elapsed={clock.elapsed}
-          loading={clock.loading}
-          onPress={() => {
-            if (clock.isRunning) void clock.clockOut();
-            else void clock.clockIn();
-          }}
-        />
-
         {/* Pipeline glance */}
         <Text style={styles.sectionLabel}>Pipeline</Text>
         <View style={styles.statRow}>
@@ -174,6 +206,9 @@ export default function HomeScreen() {
           </View>
         )}
 
+        {/* EOS section — Rocks, Issues, Todos for the current quarter */}
+        <EosSection eos={eos} loading={loading} />
+
         {/* Quick actions */}
         <Text style={[styles.sectionLabel, { marginTop: spacing.xl }]}>Quick capture</Text>
         <View style={styles.quickRow}>
@@ -204,45 +239,6 @@ export default function HomeScreen() {
 // ═══════════════════════════════════════════════════════════════════════
 // Pieces
 // ═══════════════════════════════════════════════════════════════════════
-
-function ClockChip({
-  running,
-  elapsed,
-  loading,
-  onPress,
-}: {
-  running: boolean;
-  elapsed: number;
-  loading: boolean;
-  onPress: () => void;
-}) {
-  const accent = running ? colors.amber : colors.emerald;
-  const label = running ? formatClock(elapsed) : 'Clock In';
-  const Icon = running ? Square : Play;
-  const sublabel = running ? 'On the clock' : loading ? 'Loading…' : 'Tap to start your day';
-
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.clockChip,
-        { borderColor: accent + '40', backgroundColor: accent + '14' },
-        pressed && styles.clockChipPressed,
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel={running ? 'Clock out' : 'Clock in'}
-    >
-      <View style={[styles.clockIcon, { backgroundColor: accent + '26' }]}>
-        <Icon size={18} color={accent} fill={running ? accent : 'transparent'} />
-      </View>
-      <View style={styles.clockText}>
-        <Text style={[styles.clockLabel, { color: accent }]}>{label}</Text>
-        <Text style={styles.clockSublabel}>{sublabel}</Text>
-      </View>
-      <ArrowUpRight size={18} color={accent} />
-    </Pressable>
-  );
-}
 
 function StatTile({
   icon,
@@ -326,6 +322,221 @@ function QuickAction({
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// EOS section (home widget)
+// ═══════════════════════════════════════════════════════════════════════
+
+function EosSection({
+  eos,
+  loading,
+}: {
+  eos: EosDashboard | null;
+  loading: boolean;
+}) {
+  if (loading && !eos) {
+    return (
+      <>
+        <Text style={[styles.sectionLabel, { marginTop: spacing.xl }]}>EOS</Text>
+        <Card variant="flat" style={styles.emptyCard}>
+          <Text style={styles.muted}>Loading…</Text>
+        </Card>
+      </>
+    );
+  }
+
+  if (!eos) return null;
+
+  const { stats, quarterLabel, rocks, todos } = eos;
+  const hasAnything =
+    stats.rocksTotal > 0 || stats.issuesOpen > 0 || todos.length > 0;
+
+  // Show the three rocks most in need of attention — sort by progress asc
+  // with at_risk/off_track bubbled up, and drop any that are complete.
+  const focusRocks = [...rocks]
+    .filter((r) => !r.is_complete && r.status !== 'complete')
+    .sort((a, b) => {
+      const aRisk = a.status === 'at_risk' || a.status === 'off_track' ? 0 : 1;
+      const bRisk = b.status === 'at_risk' || b.status === 'off_track' ? 0 : 1;
+      if (aRisk !== bRisk) return aRisk - bRisk;
+      return (a.progress_percentage ?? 0) - (b.progress_percentage ?? 0);
+    })
+    .slice(0, 3);
+
+  const nextTodo = todos.find((t) => t.status !== 'complete');
+
+  return (
+    <>
+      <View style={styles.sectionHeaderRow}>
+        <Text style={styles.sectionLabel}>EOS · {quarterLabel}</Text>
+      </View>
+
+      {/* Three-stat summary */}
+      <View style={styles.statRow}>
+        <EosStatTile
+          icon={<Mountain size={18} color={colors.emerald} />}
+          value={`${stats.rocksOnTrack + stats.rocksComplete}/${stats.rocksTotal || 0}`}
+          label="Rocks on track"
+          tone={
+            stats.rocksTotal === 0
+              ? 'muted'
+              : stats.rocksAtRisk > 0
+                ? 'warning'
+                : 'good'
+          }
+        />
+        <EosStatTile
+          icon={<AlertTriangle size={18} color={colors.rose} />}
+          value={String(stats.issuesOpen)}
+          label="Open issues"
+          tone={stats.issuesOpen > 0 ? 'warning' : 'good'}
+        />
+        <EosStatTile
+          icon={<CheckCircle2 size={18} color={colors.sky} />}
+          value={String(todos.length)}
+          label={
+            stats.todosOverdue > 0
+              ? `${stats.todosOverdue} overdue`
+              : stats.todosDueSoon > 0
+                ? `${stats.todosDueSoon} due ≤7d`
+                : 'My todos'
+          }
+          tone={stats.todosOverdue > 0 ? 'bad' : 'muted'}
+        />
+      </View>
+
+      {/* Focus rocks (top 3 in need of attention) */}
+      {focusRocks.length > 0 ? (
+        <View style={styles.rockList}>
+          {focusRocks.map((r) => (
+            <RockRow key={r.id} rock={r} />
+          ))}
+        </View>
+      ) : !hasAnything ? (
+        <Card variant="outline" style={styles.emptyCard}>
+          <EmptyState
+            compact
+            icon={<Mountain size={24} color={colors.textMuted} />}
+            title="No rocks this quarter"
+            description="Set quarterly rocks in the web admin to track progress here."
+          />
+        </Card>
+      ) : null}
+
+      {/* Next-up todo reminder — just one, to keep the section tight */}
+      {nextTodo && (
+        <NextTodoCard todo={nextTodo} />
+      )}
+    </>
+  );
+}
+
+function EosStatTile({
+  icon,
+  value,
+  label,
+  tone,
+}: {
+  icon: React.ReactNode;
+  value: string;
+  label: string;
+  tone: 'good' | 'warning' | 'bad' | 'muted';
+}) {
+  const borderColor =
+    tone === 'bad'
+      ? colors.rose
+      : tone === 'warning'
+        ? colors.amber
+        : tone === 'good'
+          ? colors.emerald
+          : 'transparent';
+  return (
+    <View
+      style={[
+        styles.statTile,
+        tone !== 'muted' && {
+          borderWidth: 1,
+          borderColor: borderColor + '55',
+        },
+      ]}
+    >
+      <View style={styles.statIcon}>{icon}</View>
+      <Text style={styles.statValue} numberOfLines={1}>
+        {value}
+      </Text>
+      <Text style={styles.statLabel} numberOfLines={2}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function RockRow({ rock }: { rock: EosRock }) {
+  const pct = Math.max(0, Math.min(100, rock.progress_percentage ?? 0));
+  const barColor = rockProgressColor(rock, {
+    emerald: colors.emerald,
+    amber: colors.amber,
+    rose: colors.rose,
+    sky: colors.sky,
+  });
+  const statusLabel =
+    rock.status === 'at_risk'
+      ? 'At risk'
+      : rock.status === 'off_track'
+        ? 'Off track'
+        : rock.status === 'on_track'
+          ? 'On track'
+          : rock.status === 'complete' || rock.is_complete
+            ? 'Complete'
+            : null;
+  return (
+    <Card variant="flat" style={styles.rockCard}>
+      <View style={styles.rockHeader}>
+        <Mountain
+          size={14}
+          color={barColor}
+          strokeWidth={2}
+          style={{ marginRight: spacing.xs }}
+        />
+        <Text style={styles.rockTitle} numberOfLines={1}>
+          {rock.title}
+        </Text>
+        <Text style={styles.rockPct}>{pct}%</Text>
+      </View>
+      <View style={styles.rockProgressTrack}>
+        <View
+          style={[
+            styles.rockProgressFill,
+            { width: `${pct}%`, backgroundColor: barColor },
+          ]}
+        />
+      </View>
+      {statusLabel && (
+        <Text style={[styles.rockStatus, { color: barColor }]}>{statusLabel}</Text>
+      )}
+    </Card>
+  );
+}
+
+function NextTodoCard({ todo }: { todo: import('@/lib/eosService').EosTodo }) {
+  const due = formatDueLabel(todo.due_date);
+  const dueColor = due.overdue
+    ? colors.rose
+    : due.soon
+      ? colors.amber
+      : colors.textSecondary;
+  return (
+    <Card variant="flat" style={styles.rockCard}>
+      <View style={styles.rockHeader}>
+        <Clock size={14} color={dueColor} strokeWidth={2} style={{ marginRight: spacing.xs }} />
+        <Text style={styles.rockTitle} numberOfLines={1}>
+          {todo.task}
+        </Text>
+      </View>
+      <Text style={[styles.rockStatus, { color: dueColor }]}>{due.label}</Text>
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -403,35 +614,30 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
   },
 
-  // Clock chip
-  clockChip: {
+  // Home header (flush-left, LIFTORI wordmark + greeting)
+  homeHeader: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
+  },
+  headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
-    padding: spacing.lg,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    ...shadows.card,
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
   },
-  clockChipPressed: {
-    opacity: 0.85,
-  },
-  clockIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: radii.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  clockText: {
-    flex: 1,
-  },
-  clockLabel: {
+  wordmark: {
     ...typography.h2,
-    fontVariant: ['tabular-nums'],
+    color: colors.emerald,
+    fontWeight: '800',
+    letterSpacing: 2,
   },
-  clockSublabel: {
-    ...typography.caption,
+  greetingTitle: {
+    ...typography.h1,
+    color: colors.textPrimary,
+  },
+  greetingSub: {
+    ...typography.body,
     color: colors.textSecondary,
     marginTop: 2,
   },
@@ -539,5 +745,46 @@ const styles = StyleSheet.create({
     borderRadius: radii.pill,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  // EOS section
+  rockList: {
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  rockCard: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  rockHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  rockTitle: {
+    ...typography.bodyMedium,
+    color: colors.textPrimary,
+    flex: 1,
+  },
+  rockPct: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    fontWeight: '600',
+    marginLeft: spacing.sm,
+  },
+  rockProgressTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.surface800,
+    marginTop: spacing.xs,
+    overflow: 'hidden',
+  },
+  rockProgressFill: {
+    height: '100%',
+    borderRadius: 2,
+  },
+  rockStatus: {
+    ...typography.caption,
+    fontWeight: '600',
+    marginTop: 4,
   },
 });

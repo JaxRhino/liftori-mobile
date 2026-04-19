@@ -17,6 +17,7 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Linking,
   ListRenderItem,
   Modal,
   Platform,
@@ -28,7 +29,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { Camera, ImagePlus, Send, X } from 'lucide-react-native';
+import { Camera, ImagePlus, Send, Smile, Video, X } from 'lucide-react-native';
 import { SafeScreen } from '@/components/SafeScreen';
 import { Header } from '@/components/Header';
 import { Avatar } from '@/components/Avatar';
@@ -36,15 +37,23 @@ import { EmptyState } from '@/components/EmptyState';
 import {
   ChatAttachment,
   ChatChannel,
+  ChatChannelMember,
   ChatMessage,
+  ChatReaction,
   channelDisplayName,
   formatMessageTime,
   getChannel,
+  groupReactions,
+  listChannelMembers,
   listMessages,
+  listReactions,
+  markChannelRead,
   sendMessage,
   subscribeToChannel,
+  toggleReaction,
   uploadChatAttachment,
 } from '@/lib/chatService';
+import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/AuthContext';
 import { colors, radii, spacing, typography } from '@/lib/theme';
 import * as haptics from '@/lib/haptics';
@@ -65,13 +74,22 @@ export default function ChatChannelScreen() {
   const { user } = useAuth();
 
   const [channel, setChannel] = useState<ChatChannel | null>(null);
+  const [members, setMembers] = useState<ChatChannelMember[]>([]);
+  const [partnerProfile, setPartnerProfile] = useState<{
+    id: string;
+    full_name: string | null;
+    email: string | null;
+    avatar_url: string | null;
+  } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [reactions, setReactions] = useState<Map<string, ChatReaction[]>>(new Map());
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [reactionTarget, setReactionTarget] = useState<ChatMessage | null>(null);
 
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
@@ -79,19 +97,55 @@ export default function ChatChannelScreen() {
   const reload = useCallback(async () => {
     if (!channelId) return;
     try {
-      const [ch, msgs] = await Promise.all([
+      const [ch, msgs, mems] = await Promise.all([
         getChannel(channelId),
         listMessages(channelId, { limit: 50 }),
+        listChannelMembers(channelId).catch(() => [] as ChatChannelMember[]),
       ]);
       setChannel(ch);
+      setMembers(mems);
       setMessages(msgs);
+
+      // Resolve DM counterparty profile for the header avatar + title
+      if (ch?.type === 'direct' && user?.id) {
+        const other = mems.find((m) => m.user_id !== user.id);
+        if (other) {
+          const { data } = await supabase
+            .from('profiles')
+            .select('id, full_name, email, avatar_url')
+            .eq('id', other.user_id)
+            .maybeSingle();
+          setPartnerProfile((data as typeof partnerProfile) || null);
+        }
+      } else {
+        setPartnerProfile(null);
+      }
+
+      // Pull reactions for the loaded messages in one shot
+      if (msgs.length) {
+        const rxs = await listReactions(msgs.map((m) => m.id)).catch(
+          () => [] as ChatReaction[]
+        );
+        const map = new Map<string, ChatReaction[]>();
+        for (const r of rxs) {
+          const arr = map.get(r.message_id) || [];
+          arr.push(r);
+          map.set(r.message_id, arr);
+        }
+        setReactions(map);
+      } else {
+        setReactions(new Map());
+      }
+
+      // Mark the channel as read on load so the Chat tab badge clears
+      markChannelRead(channelId).catch(() => {});
       setError(null);
     } catch (e: any) {
       setError(e?.message || 'Failed to load messages');
     } finally {
       setLoading(false);
     }
-  }, [channelId]);
+  }, [channelId, user?.id]);
 
   useEffect(() => {
     setLoading(true);
@@ -106,6 +160,8 @@ export default function ChatChannelScreen() {
         if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
+      // The user is actively viewing — keep the badge clear
+      void markChannelRead(channelId).catch(() => {});
     });
     return unsub;
   }, [channelId]);
@@ -214,7 +270,9 @@ export default function ChatChannelScreen() {
           )
         );
       }
-      await sendMessage(channelId, body, uploaded.length > 0 ? uploaded : null);
+      await sendMessage(channelId, body, {
+        attachments: uploaded.length > 0 ? uploaded : null,
+      });
       setDraft('');
       setPending([]);
       haptics.success();
@@ -226,12 +284,96 @@ export default function ChatChannelScreen() {
     }
   }, [channelId, draft, pending, sending]);
 
-  const title = useMemo(
-    () => (channel ? channelDisplayName(channel) : 'Loading…'),
-    [channel]
-  );
+  const title = useMemo(() => {
+    if (!channel) return 'Loading…';
+    if (channel.type === 'direct') {
+      return (
+        partnerProfile?.full_name ||
+        partnerProfile?.email?.split('@')[0] ||
+        channelDisplayName(channel, {
+          myUserId: user?.id,
+          members: members.map((m) => ({ user_id: m.user_id })),
+        })
+      );
+    }
+    return channelDisplayName(channel);
+  }, [channel, partnerProfile, members, user?.id]);
 
-  const subtitle = channel?.description || undefined;
+  const subtitle = channel?.type === 'direct'
+    ? (partnerProfile?.email || undefined)
+    : channel?.description || undefined;
+
+  // Video call — opens a stable per-channel room URL. For v1 we rely on
+  // Daily.co's prebuilt page (no SDK required) — the room slug is
+  // deterministic so both sides join the same room. Task #15 will swap
+  // this for an embedded WebRTC SDK.
+  const startVideoCall = useCallback(() => {
+    if (!channelId) return;
+    const slug = `liftori-${channelId.slice(0, 12)}`;
+    const url = `https://liftori.daily.co/${slug}`;
+    haptics.tap();
+    Alert.alert(
+      'Start video call?',
+      'This opens a secure Daily.co room in your browser. Share the link with anyone else you want on the call.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start call',
+          onPress: async () => {
+            // Post the room URL into the channel so other members can join
+            try {
+              await sendMessage(channelId, `📹 Video call started: ${url}`);
+            } catch {
+              /* non-fatal */
+            }
+            // Open the URL in the user's browser (Linking ships with RN core)
+            try {
+              await Linking.openURL(url);
+            } catch (e: any) {
+              setError(e?.message || 'Could not open video call');
+            }
+          },
+        },
+      ]
+    );
+  }, [channelId]);
+
+  const handleToggleReaction = useCallback(
+    async (messageId: string, emoji: string) => {
+      try {
+        const res = await toggleReaction(messageId, emoji);
+        // Optimistic-ish: update local map
+        setReactions((prev) => {
+          const next = new Map(prev);
+          const arr = (next.get(messageId) || []).slice();
+          if (res.added) {
+            arr.push({
+              id: `tmp-${Date.now()}`,
+              message_id: messageId,
+              user_id: user?.id ?? '',
+              user_name:
+                user?.user_metadata?.full_name ||
+                user?.email?.split('@')[0] ||
+                '',
+              emoji,
+              created_at: new Date().toISOString(),
+            });
+          } else {
+            const idx = arr.findIndex(
+              (r) => r.emoji === emoji && r.user_id === user?.id
+            );
+            if (idx >= 0) arr.splice(idx, 1);
+          }
+          next.set(messageId, arr);
+          return next;
+        });
+        haptics.tap();
+      } catch (e: any) {
+        setError(e?.message || 'Reaction failed');
+      }
+    },
+    [user?.id, user?.email, user?.user_metadata?.full_name]
+  );
 
   const renderItem: ListRenderItem<ChatMessage> = useCallback(
     ({ item, index }) => {
@@ -243,16 +385,24 @@ export default function ChatChannelScreen() {
           new Date(prev.created_at).getTime() >
           5 * 60 * 1000;
       const mine = item.sender_id === user?.id;
+      const rx = reactions.get(item.id) || [];
       return (
         <MessageBubble
           msg={item}
           mine={mine}
           showMeta={showMeta}
+          reactions={rx}
+          myUserId={user?.id}
           onImagePress={(url) => setLightboxUrl(url)}
+          onLongPress={() => {
+            haptics.bump();
+            setReactionTarget(item);
+          }}
+          onTogglePill={(emoji) => handleToggleReaction(item.id, emoji)}
         />
       );
     },
-    [messages, user?.id]
+    [messages, reactions, user?.id, handleToggleReaction]
   );
 
   return (
@@ -262,6 +412,20 @@ export default function ChatChannelScreen() {
         subtitle={subtitle}
         onBack={() => router.back()}
         bordered
+        trailing={
+          <Pressable
+            onPress={startVideoCall}
+            hitSlop={10}
+            style={({ pressed }) => [
+              styles.headerIconBtn,
+              pressed && styles.headerIconBtnPressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Start video call"
+          >
+            <Video size={22} color={colors.emerald} strokeWidth={2.2} />
+          </Pressable>
+        }
       />
 
       <KeyboardAvoidingView
@@ -316,6 +480,17 @@ export default function ChatChannelScreen() {
       </KeyboardAvoidingView>
 
       <Lightbox url={lightboxUrl} onClose={() => setLightboxUrl(null)} />
+
+      <ReactionPicker
+        target={reactionTarget}
+        onClose={() => setReactionTarget(null)}
+        onPick={(emoji) => {
+          if (!reactionTarget) return;
+          const id = reactionTarget.id;
+          setReactionTarget(null);
+          void handleToggleReaction(id, emoji);
+        }}
+      />
     </SafeScreen>
   );
 }
@@ -328,12 +503,20 @@ function MessageBubble({
   msg,
   mine,
   showMeta,
+  reactions,
+  myUserId,
   onImagePress,
+  onLongPress,
+  onTogglePill,
 }: {
   msg: ChatMessage;
   mine: boolean;
   showMeta: boolean;
+  reactions: ChatReaction[];
+  myUserId: string | undefined;
   onImagePress: (url: string) => void;
+  onLongPress: () => void;
+  onTogglePill: (emoji: string) => void;
 }) {
   const who =
     msg.sender?.full_name || msg.sender?.email?.split('@')[0] || 'Unknown';
@@ -345,6 +528,7 @@ function MessageBubble({
   const isPlaceholder =
     images.length > 0 && (msg.content === '📷' || msg.content === '📎');
   const showText = !!msg.content && !isPlaceholder;
+  const groupedReactions = groupReactions(reactions, myUserId);
 
   return (
     <View style={[styles.bubbleRow, mine && styles.bubbleRowMine]}>
@@ -365,67 +549,115 @@ function MessageBubble({
           </View>
         )}
 
-        {images.length > 0 && (
+        <Pressable
+          onLongPress={onLongPress}
+          delayLongPress={250}
+          style={[
+            styles.bubbleContentCol,
+            mine && styles.bubbleColMine,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Message — long press to react"
+        >
+          {images.length > 0 && (
+            <View
+              style={[
+                styles.imageGrid,
+                mine ? styles.imageGridMine : styles.imageGridOther,
+              ]}
+            >
+              {images.map((img) => (
+                <Pressable
+                  key={img.url}
+                  onPress={() => onImagePress(img.url)}
+                  onLongPress={onLongPress}
+                  delayLongPress={250}
+                  style={styles.imageTile}
+                >
+                  <Image
+                    source={{ uri: img.url }}
+                    style={styles.imageTileImg}
+                    resizeMode="cover"
+                  />
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {showText && (
+            <View
+              style={[
+                styles.bubble,
+                mine ? styles.bubbleMine : styles.bubbleOther,
+                images.length > 0 && styles.bubbleAfterImage,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.bubbleText,
+                  mine ? styles.bubbleTextMine : styles.bubbleTextOther,
+                ]}
+              >
+                {msg.content}
+              </Text>
+            </View>
+          )}
+
+          {files.map((f) => (
+            <View
+              key={f.url}
+              style={[
+                styles.filePill,
+                mine ? styles.filePillMine : styles.filePillOther,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.fileName,
+                  mine ? styles.bubbleTextMine : styles.bubbleTextOther,
+                ]}
+                numberOfLines={1}
+              >
+                📎 {f.filename}
+              </Text>
+            </View>
+          ))}
+        </Pressable>
+
+        {groupedReactions.length > 0 && (
           <View
             style={[
-              styles.imageGrid,
-              mine ? styles.imageGridMine : styles.imageGridOther,
+              styles.reactionRow,
+              mine ? styles.reactionRowMine : styles.reactionRowOther,
             ]}
           >
-            {images.map((img) => (
+            {groupedReactions.map((g) => (
               <Pressable
-                key={img.url}
-                onPress={() => onImagePress(img.url)}
-                style={styles.imageTile}
+                key={g.emoji}
+                onPress={() => onTogglePill(g.emoji)}
+                style={({ pressed }) => [
+                  styles.reactionPill,
+                  g.byMe && styles.reactionPillMine,
+                  pressed && styles.reactionPillPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={`${g.emoji} ${g.count} reaction${
+                  g.count === 1 ? '' : 's'
+                }${g.byMe ? ', including yours' : ''}`}
               >
-                <Image
-                  source={{ uri: img.url }}
-                  style={styles.imageTileImg}
-                  resizeMode="cover"
-                />
+                <Text style={styles.reactionEmoji}>{g.emoji}</Text>
+                <Text
+                  style={[
+                    styles.reactionCount,
+                    g.byMe && styles.reactionCountMine,
+                  ]}
+                >
+                  {g.count}
+                </Text>
               </Pressable>
             ))}
           </View>
         )}
-
-        {showText && (
-          <View
-            style={[
-              styles.bubble,
-              mine ? styles.bubbleMine : styles.bubbleOther,
-              images.length > 0 && styles.bubbleAfterImage,
-            ]}
-          >
-            <Text
-              style={[
-                styles.bubbleText,
-                mine ? styles.bubbleTextMine : styles.bubbleTextOther,
-              ]}
-            >
-              {msg.content}
-            </Text>
-          </View>
-        )}
-
-        {files.map((f) => (
-          <View
-            key={f.url}
-            style={[
-              styles.filePill,
-              mine ? styles.filePillMine : styles.filePillOther,
-            ]}
-          >
-            <Text
-              style={[
-                styles.fileName,
-                mine ? styles.bubbleTextMine : styles.bubbleTextOther,
-              ]}
-              numberOfLines={1}
-            >
-              📎 {f.filename}
-            </Text>
-          </View>
-        ))}
       </View>
     </View>
   );
@@ -536,6 +768,49 @@ function Composer({
         )}
       </Pressable>
     </View>
+  );
+}
+
+function ReactionPicker({
+  target,
+  onClose,
+  onPick,
+}: {
+  target: ChatMessage | null;
+  onClose: () => void;
+  onPick: (emoji: string) => void;
+}) {
+  const EMOJIS = ['❤️', '👍', '👎', '😂', '🎉', '🔥', '👀', '✅'];
+  return (
+    <Modal
+      visible={!!target}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.reactionBackdrop} onPress={onClose}>
+        <Pressable style={styles.reactionSheet} onPress={() => {}}>
+          <View style={styles.reactionSheetHandle} />
+          <Text style={styles.reactionSheetTitle}>Add a reaction</Text>
+          <View style={styles.reactionGrid}>
+            {EMOJIS.map((e) => (
+              <Pressable
+                key={e}
+                onPress={() => onPick(e)}
+                style={({ pressed }) => [
+                  styles.reactionGridBtn,
+                  pressed && styles.reactionGridBtnPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={`React with ${e}`}
+              >
+                <Text style={styles.reactionGridEmoji}>{e}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -818,5 +1093,121 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.6)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  // Header trailing icon (video call)
+  headerIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerIconBtnPressed: {
+    opacity: 0.6,
+  },
+
+  // Bubble content wrapper (for long-press)
+  bubbleContentCol: {
+    alignItems: 'flex-start',
+  },
+
+  // Reaction pills under bubbles
+  reactionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 4,
+    paddingHorizontal: 2,
+  },
+  reactionRowMine: {
+    justifyContent: 'flex-end',
+  },
+  reactionRowOther: {
+    justifyContent: 'flex-start',
+  },
+  reactionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surface800,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  reactionPillMine: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderColor: colors.emerald,
+  },
+  reactionPillPressed: {
+    opacity: 0.7,
+  },
+  reactionEmoji: {
+    fontSize: 13,
+  },
+  reactionCount: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    fontWeight: '600',
+    fontSize: 11,
+  },
+  reactionCountMine: {
+    color: colors.emerald,
+  },
+
+  // Reaction picker (bottom sheet modal)
+  reactionBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  reactionSheet: {
+    backgroundColor: colors.surface900,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xl,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  reactionSheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: spacing.md,
+  },
+  reactionSheetTitle: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: spacing.md,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  reactionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  reactionGridBtn: {
+    width: '22%',
+    aspectRatio: 1,
+    borderRadius: radii.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface800,
+  },
+  reactionGridBtnPressed: {
+    opacity: 0.6,
+    transform: [{ scale: 0.94 }],
+  },
+  reactionGridEmoji: {
+    fontSize: 28,
   },
 });

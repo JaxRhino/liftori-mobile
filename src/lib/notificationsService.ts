@@ -131,8 +131,15 @@ export function subscribeToNotifications(
   userId: string,
   onInsert: (n: Notification) => void,
 ): () => void {
+  // IMPORTANT: the channel name MUST be unique per subscription. Supabase
+  // Realtime v2 will reject `.on('postgres_changes', …)` with
+  //   "tried to add postgres_changes callbacks to topic … more than once"
+  // if two screens (e.g. the More tab badge + the Notifications inbox)
+  // both create a channel with the same name. Appending a short random
+  // suffix gives every mount its own topic so both can coexist.
+  const suffix = Math.random().toString(36).slice(2, 10);
   const channel = supabase
-    .channel(`notifications-${userId}`)
+    .channel(`notifications-${userId}-${suffix}`)
     .on(
       'postgres_changes',
       {
