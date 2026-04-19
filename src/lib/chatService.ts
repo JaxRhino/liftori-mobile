@@ -128,8 +128,42 @@ async function currentUser() {
   return user;
 }
 
-const MESSAGE_SELECT =
-  '*, sender:profiles!chat_messages_sender_id_fkey(id, full_name, email, avatar_url)';
+// Don't use a PostgREST embed here. `chat_messages.sender_id` FK targets
+// `auth.users(id)` — not `public.profiles(id)` — so an embed hint like
+// `sender:profiles!chat_messages_sender_id_fkey(...)` 400s (PostgREST
+// can't resolve the relationship). Instead we rely on the denormalized
+// sender_* columns (sender_name is NOT NULL, others nullable) that are
+// stamped on insert, and synthesize a `sender` object client-side via
+// `withSenderShim()` so UI code that reads `msg.sender?.full_name` etc.
+// keeps working unchanged.
+const MESSAGE_SELECT = '*';
+
+/** Synthesize a `sender` object from the denormalized sender_* columns
+ * on chat_messages so consumers that read `msg.sender?.full_name`,
+ * `msg.sender?.avatar_url` etc. keep working without a relational embed.
+ * Returns `sender: null` for system messages (sender_id == null).
+ */
+function withSenderShim<T extends { sender_id?: string | null; sender_name?: string | null; sender_avatar_url?: string | null }>(
+  row: T
+): T {
+  if (!row) return row;
+  const sender = row.sender_id
+    ? {
+        id: row.sender_id,
+        full_name: row.sender_name ?? null,
+        email: null as string | null, // not denormalized — UI falls back to full_name
+        avatar_url: row.sender_avatar_url ?? null,
+      }
+    : null;
+  return { ...row, sender } as T;
+}
+
+function withSenderShims<T extends { sender_id?: string | null; sender_name?: string | null; sender_avatar_url?: string | null }>(
+  rows: T[] | null | undefined
+): T[] {
+  if (!rows) return [];
+  return rows.map((r) => withSenderShim(r));
+}
 
 // ─── Channel reads ───────────────────────────────────────────────────
 /**
@@ -309,7 +343,7 @@ export async function listMessages(
     const { data, error } = await q;
     if (error) throw error;
     // Oldest-first for render convenience
-    return ((data as ChatMessage[]) || []).slice().reverse();
+    return withSenderShims(data as ChatMessage[]).slice().reverse();
   } catch (e) {
     err(e, 'listMessages');
   }
@@ -345,7 +379,7 @@ export async function listThreadReplies(parentMessageId: string): Promise<ChatMe
       .eq('is_deleted', false)
       .order('created_at', { ascending: true });
     if (error) throw error;
-    return (data as ChatMessage[]) || [];
+    return withSenderShims(data as ChatMessage[]);
   } catch (e) {
     err(e, 'listThreadReplies');
   }
@@ -403,7 +437,7 @@ export async function sendMessage(
       .select(MESSAGE_SELECT)
       .single();
     if (error) throw error;
-    return data as ChatMessage;
+    return withSenderShim(data as ChatMessage);
   } catch (e) {
     err(e, 'sendMessage');
   }
@@ -420,7 +454,7 @@ export async function editMessage(messageId: string, newContent: string): Promis
       .select(MESSAGE_SELECT)
       .single();
     if (error) throw error;
-    return data as ChatMessage;
+    return withSenderShim(data as ChatMessage);
   } catch (e) {
     err(e, 'editMessage');
   }
@@ -759,10 +793,10 @@ export function subscribeToChannel(
             .select(MESSAGE_SELECT)
             .eq('id', (payload.new as { id: string }).id)
             .maybeSingle();
-          if (data) onInsert(data as ChatMessage);
-          else onInsert(payload.new as unknown as ChatMessage);
+          if (data) onInsert(withSenderShim(data as ChatMessage));
+          else onInsert(withSenderShim(payload.new as unknown as ChatMessage));
         } catch {
-          onInsert(payload.new as unknown as ChatMessage);
+          onInsert(withSenderShim(payload.new as unknown as ChatMessage));
         }
       }
     )

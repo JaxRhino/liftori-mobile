@@ -232,8 +232,18 @@ export async function sendMessage(
   userMessage: string,
 ): Promise<SendMessageResponse> {
   try {
+    // Explicitly pull the current access token and pass it as Authorization.
+    // Supabase-js v2 normally attaches this automatically for functions.invoke,
+    // but on cold-started mobile clients we've seen the auto-attach miss and
+    // the platform's verify_jwt gateway then 401s the request. Forcing the
+    // header removes the ambiguity.
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess?.session?.access_token;
+    if (!token) throw new Error('Not signed in — please log out and back in');
+
     const { data, error } = await supabase.functions.invoke<SendMessageResponse>('assistant-chat', {
       body: { threadId, userMessage },
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (error) throw error;
     if (!data) throw new Error('No response from assistant');
